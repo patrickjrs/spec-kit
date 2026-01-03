@@ -32,6 +32,7 @@ import tempfile
 import shutil
 import shlex
 import json
+import re
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -1469,7 +1470,6 @@ def implement(
                 content = f.read()
             
             # Look for unchecked tasks: - [ ] or - []
-            import re
             incomplete_tasks = re.findall(r'- \[ \]\s*(.+)', content)
             
             if incomplete_tasks:
