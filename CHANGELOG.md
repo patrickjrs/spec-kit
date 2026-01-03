@@ -7,6 +7,20 @@ All notable changes to the Specify CLI and templates are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- New `specify implement` command for orchestrating implementation tasks with optional cloud agent delegation
+  - `--delegate-to` parameter for delegating tasks to cloud agents (currently supports GitHub Copilot Agent)
+  - `--remote-branch` parameter for branch management (current, new auto-generated, or specific branch)
+  - `--auto-commit` flag to automatically commit and push changes before delegation
+  - Task inference from tasks.md when no explicit task is provided
+  - Pre-delegation validation (checks for uncommitted changes, branch status)
+  - Context building from specifications using check-prerequisites.sh
+  - Branch management with auto-generated names based on task and feature number
+  - Requires GitHub CLI (`gh`) for delegation functionality
+
 ## [0.0.22] - 2025-11-07
 
 - Support for VS Code/Copilot agents, and moving away from prompts to proper agents with hand-offs.
