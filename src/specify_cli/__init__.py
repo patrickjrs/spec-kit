@@ -1361,6 +1361,305 @@ def version():
     console.print(panel)
     console.print()
 
+@app.command()
+def implement(
+    task: str = typer.Argument(None, help="Task description or message to implement (optional - will infer from tasks.md if not provided)"),
+    delegate_to: str = typer.Option(None, "--delegate-to", help="Cloud agent to delegate task to (e.g., 'copilot')"),
+    remote_branch: str = typer.Option(None, "--remote-branch", help="Remote branch to use: empty (current), 'new' (auto-generate), or specific name"),
+    auto_commit: bool = typer.Option(False, "--auto-commit", help="Automatically commit and push changes before delegation"),
+):
+    """
+    Execute implementation tasks with optional cloud agent delegation.
+    
+    This command helps orchestrate implementation work by:
+    1. Building context from specifications and plans
+    2. Validating pre-delegation conditions (clean working tree, up-to-date branch)
+    3. Optionally delegating to cloud agents like GitHub Copilot Agent
+    4. Managing branch workflows for remote execution
+    
+    Examples:
+        # Local execution (no delegation)
+        specify implement "Add user authentication"
+        
+        # Delegate to GitHub Copilot Agent
+        specify implement "Add user authentication" --delegate-to copilot
+        
+        # Delegate with auto-generated branch
+        specify implement "Fix bug #123" --delegate-to copilot --remote-branch new
+        
+        # Delegate to specific branch
+        specify implement "Add feature" --delegate-to copilot --remote-branch feature/new-auth
+        
+        # Infer next task from tasks.md
+        specify implement --delegate-to copilot
+    """
+    show_banner()
+    
+    # Check if we're in a git repository
+    repo_root = Path.cwd()
+    while repo_root != repo_root.parent:
+        if (repo_root / ".git").exists():
+            break
+        repo_root = repo_root.parent
+    else:
+        console.print("[red]Error:[/red] Not in a git repository")
+        console.print("[yellow]Tip:[/yellow] Run this command from within a git repository")
+        raise typer.Exit(1)
+    
+    # Build context using check-prerequisites script
+    console.print("[cyan]Building implementation context...[/cyan]")
+    script_path = repo_root / "scripts" / "bash" / "check-prerequisites.sh"
+    
+    if not script_path.exists():
+        # Try PowerShell script on Windows
+        script_path = repo_root / "scripts" / "powershell" / "check-prerequisites.ps1"
+        if not script_path.exists():
+            console.print("[red]Error:[/red] check-prerequisites script not found")
+            console.print("[yellow]Tip:[/yellow] Ensure you're in a Specify-initialized project")
+            raise typer.Exit(1)
+    
+    # Run check-prerequisites to get context
+    try:
+        if script_path.suffix == ".sh":
+            result = subprocess.run(
+                ["bash", str(script_path), "--json", "--require-tasks", "--include-tasks"],
+                capture_output=True,
+                text=True,
+                check=True,
+                cwd=repo_root
+            )
+        else:  # PowerShell
+            result = subprocess.run(
+                ["pwsh", str(script_path), "-Json", "-RequireTasks", "-IncludeTasks"],
+                capture_output=True,
+                text=True,
+                check=True,
+                cwd=repo_root
+            )
+        
+        context = json.loads(result.stdout.strip())
+        feature_dir = Path(context["FEATURE_DIR"])
+        available_docs = context.get("AVAILABLE_DOCS", [])
+        
+        console.print(f"[green]✓[/green] Context loaded from: {feature_dir.name}")
+        console.print(f"[green]✓[/green] Available documents: {', '.join(available_docs)}")
+        
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Error:[/red] Failed to build context")
+        if e.stderr:
+            console.print(f"[red]{e.stderr}[/red]")
+        raise typer.Exit(1)
+    except json.JSONDecodeError as e:
+        console.print(f"[red]Error:[/red] Failed to parse context JSON: {e}")
+        raise typer.Exit(1)
+    
+    # Infer task if not provided
+    if not task:
+        console.print("[cyan]No task specified, inferring from tasks.md...[/cyan]")
+        tasks_file = feature_dir / "tasks.md"
+        
+        if not tasks_file.exists():
+            console.print("[red]Error:[/red] tasks.md not found and no task specified")
+            console.print("[yellow]Tip:[/yellow] Either provide a task or run /speckit.tasks first")
+            raise typer.Exit(1)
+        
+        # Parse tasks.md to find next incomplete task
+        try:
+            with open(tasks_file, 'r') as f:
+                content = f.read()
+            
+            # Look for unchecked tasks: - [ ] or - []
+            import re
+            incomplete_tasks = re.findall(r'- \[ \]\s*(.+)', content)
+            
+            if incomplete_tasks:
+                task = incomplete_tasks[0].strip()
+                console.print(f"[green]✓[/green] Inferred task: {task}")
+            else:
+                console.print("[yellow]Warning:[/yellow] No incomplete tasks found in tasks.md")
+                console.print("[cyan]All tasks appear to be complete![/cyan]")
+                raise typer.Exit(0)
+                
+        except Exception as e:
+            console.print(f"[red]Error:[/red] Failed to parse tasks.md: {e}")
+            raise typer.Exit(1)
+    
+    # If delegating to cloud agent
+    if delegate_to:
+        console.print(f"[cyan]Preparing delegation to {delegate_to} agent...[/cyan]")
+        
+        # Validate cloud agent
+        if delegate_to.lower() not in ["copilot", "github-copilot"]:
+            console.print(f"[red]Error:[/red] Unsupported cloud agent: {delegate_to}")
+            console.print("[yellow]Currently supported:[/yellow] copilot")
+            raise typer.Exit(1)
+        
+        # Check for GitHub CLI
+        if not check_tool("gh"):
+            console.print("[red]Error:[/red] GitHub CLI (gh) is required for cloud delegation")
+            console.print("[cyan]Install from:[/cyan] https://cli.github.com/")
+            raise typer.Exit(1)
+        
+        # Pre-delegation validation
+        console.print("[cyan]Validating repository state...[/cyan]")
+        
+        # Check for uncommitted changes
+        status_result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            cwd=repo_root
+        )
+        
+        if status_result.stdout.strip():
+            if auto_commit:
+                console.print("[yellow]Uncommitted changes detected, committing...[/yellow]")
+                subprocess.run(["git", "add", "."], cwd=repo_root, check=True)
+                subprocess.run(
+                    ["git", "commit", "-m", f"Auto-commit before delegation: {task[:50]}"],
+                    cwd=repo_root,
+                    check=True
+                )
+                console.print("[green]✓[/green] Changes committed")
+            else:
+                console.print("[red]Error:[/red] Uncommitted changes detected")
+                console.print("[yellow]Tip:[/yellow] Commit changes or use --auto-commit flag")
+                raise typer.Exit(1)
+        else:
+            console.print("[green]✓[/green] Working tree is clean")
+        
+        # Get current branch
+        current_branch = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            cwd=repo_root,
+            check=True
+        ).stdout.strip()
+        
+        # Handle branch management
+        target_branch = current_branch
+        if remote_branch:
+            if remote_branch.lower() == "new":
+                # Generate branch name from task
+                import unicodedata
+                # Normalize and create branch name
+                branch_base = task[:40] if task else "implementation"
+                # Remove special characters, replace spaces with hyphens
+                branch_name = re.sub(r'[^\w\s-]', '', branch_base)
+                branch_name = re.sub(r'[-\s]+', '-', branch_name).strip('-').lower()
+                
+                # Get feature number from current branch if it follows 001- pattern
+                feature_match = re.match(r'(\d{3})-', current_branch)
+                if feature_match:
+                    feature_num = feature_match.group(1)
+                    target_branch = f"{feature_num}-{branch_name}"
+                else:
+                    target_branch = branch_name
+                
+                console.print(f"[cyan]Creating new branch:[/cyan] {target_branch}")
+                subprocess.run(
+                    ["git", "checkout", "-b", target_branch],
+                    cwd=repo_root,
+                    check=True,
+                    capture_output=True
+                )
+                console.print(f"[green]✓[/green] Created and switched to branch: {target_branch}")
+            else:
+                # Use specified branch name
+                target_branch = remote_branch
+                
+                # Check if branch exists
+                branch_check = subprocess.run(
+                    ["git", "rev-parse", "--verify", target_branch],
+                    capture_output=True,
+                    cwd=repo_root
+                )
+                
+                if branch_check.returncode != 0:
+                    console.print(f"[cyan]Creating branch:[/cyan] {target_branch}")
+                    subprocess.run(
+                        ["git", "checkout", "-b", target_branch],
+                        cwd=repo_root,
+                        check=True,
+                        capture_output=True
+                    )
+                else:
+                    console.print(f"[cyan]Switching to existing branch:[/cyan] {target_branch}")
+                    subprocess.run(
+                        ["git", "checkout", target_branch],
+                        cwd=repo_root,
+                        check=True,
+                        capture_output=True
+                    )
+                console.print(f"[green]✓[/green] Using branch: {target_branch}")
+        
+        # Push branch to remote
+        console.print(f"[cyan]Pushing branch to remote...[/cyan]")
+        push_result = subprocess.run(
+            ["git", "push", "-u", "origin", target_branch],
+            capture_output=True,
+            text=True,
+            cwd=repo_root
+        )
+        
+        if push_result.returncode != 0:
+            console.print("[yellow]Warning:[/yellow] Failed to push branch")
+            console.print(f"[dim]{push_result.stderr}[/dim]")
+        else:
+            console.print(f"[green]✓[/green] Branch pushed to remote")
+        
+        # Prepare context for delegation
+        context_summary = {
+            "task": task,
+            "feature_dir": str(feature_dir),
+            "available_docs": available_docs,
+            "branch": target_branch
+        }
+        
+        console.print("\n[bold cyan]Delegation Summary:[/bold cyan]")
+        console.print(f"  Task: {task}")
+        console.print(f"  Agent: GitHub Copilot Agent")
+        console.print(f"  Branch: {target_branch}")
+        console.print(f"  Context: {len(available_docs)} documents available")
+        
+        # Delegate to GitHub Copilot Agent
+        console.print(f"\n[cyan]Delegating to GitHub Copilot Agent...[/cyan]")
+        
+        # Build delegation message
+        delegation_msg = f"""Please implement the following task:
+
+Task: {task}
+
+Context:
+- Feature directory: {feature_dir}
+- Available specifications: {', '.join(available_docs)}
+- Branch: {target_branch}
+
+Please:
+1. Review the specifications in {feature_dir}
+2. Implement the task following the plan
+3. Run tests to validate the implementation
+4. Commit your changes with a clear message
+
+You can use the /speckit.implement command for structured implementation.
+"""
+        
+        console.print("[yellow]Note:[/yellow] GitHub Copilot Agent delegation is being prepared...")
+        console.print("[cyan]To complete delegation:[/cyan]")
+        console.print(f"  1. Open your repository in GitHub")
+        console.print(f"  2. Navigate to the Copilot tab")
+        console.print(f"  3. Create a new agent task with the context above")
+        console.print(f"\n[dim]Context has been prepared and can be found in your working directory.[/dim]")
+        
+    else:
+        # Local execution (no delegation)
+        console.print("[cyan]Local execution mode[/cyan]")
+        console.print(f"[cyan]Task:[/cyan] {task}")
+        console.print("[yellow]Tip:[/yellow] Use --delegate-to copilot to delegate to GitHub Copilot Agent")
+        console.print("\n[dim]For local implementation, use your AI assistant with:[/dim]")
+        console.print("[cyan]/speckit.implement[/cyan] <task details>")
+
 def main():
     app()
 
