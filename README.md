@@ -169,10 +169,12 @@ The `specify` command supports the following options:
 
 ### Commands
 
-| Command | Description                                                                                                                                             |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `init`  | Initialize a new Specify project from the latest template                                                                                               |
-| `check` | Check for installed tools (`git`, `claude`, `gemini`, `code`/`code-insiders`, `cursor-agent`, `windsurf`, `qwen`, `opencode`, `codex`, `shai`, `qoder`) |
+| Command     | Description                                                                                                                                             |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `init`      | Initialize a new Specify project from the latest template                                                                                               |
+| `check`     | Check for installed tools (`git`, `claude`, `gemini`, `code`/`code-insiders`, `cursor-agent`, `windsurf`, `qwen`, `opencode`, `codex`, `shai`, `qoder`) |
+| `implement` | Execute implementation tasks with optional cloud agent delegation                                                                                       |
+| `version`   | Display version and system information                                                                                                                  |
 
 ### `specify init` Arguments & Options
 
@@ -228,6 +230,52 @@ specify init --here --ai copilot
 specify init . --force --ai copilot
 # or
 specify init --here --force --ai copilot
+
+# Use a custom GitHub token for rate-limited environments
+specify init my-project --ai claude --github-token ghp_your_token_here
+```
+
+### `specify implement` Arguments & Options
+
+The `implement` command helps orchestrate implementation work with optional cloud agent delegation.
+
+| Argument/Option   | Type     | Description                                                                           |
+| ----------------- | -------- | ------------------------------------------------------------------------------------- |
+| `<task>`          | Argument | Task description or message to implement (optional - will infer from tasks.md)        |
+| `--delegate-to`   | Option   | Cloud agent to delegate task to (e.g., 'copilot')                                     |
+| `--remote-branch` | Option   | Remote branch to use: empty (current), 'new' (auto-generate), or specific name       |
+| `--auto-commit`   | Flag     | Automatically commit and push changes before delegation                               |
+
+#### Prerequisites for Cloud Delegation
+
+When using `--delegate-to copilot`, you need:
+- GitHub CLI (`gh`) installed and authenticated
+- A Specify-initialized project with specifications
+- Clean working tree (or use `--auto-commit`)
+
+### `specify implement` Examples
+
+```bash
+# Local execution (no delegation) - displays task context
+specify implement "Add user authentication"
+
+# Infer next task from tasks.md
+specify implement
+
+# Delegate to GitHub Copilot Agent on current branch
+specify implement "Add user authentication" --delegate-to copilot
+
+# Delegate with auto-generated branch name
+specify implement "Fix bug #123" --delegate-to copilot --remote-branch new
+
+# Delegate to specific branch
+specify implement "Add feature" --delegate-to copilot --remote-branch feature/new-auth
+
+# Auto-commit changes before delegation
+specify implement "Add tests" --delegate-to copilot --auto-commit
+
+# Infer task and delegate
+specify implement --delegate-to copilot
 
 # Skip git initialization
 specify init my-project --ai gemini --no-git
